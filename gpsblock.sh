@@ -1,53 +1,254 @@
 #!/bin/bash
 
-IPSET="gpsblock"
-CHAIN="GPSBLOCK"
+IPSET4="gpsblock"
+IPSET6="gpsblock6"
 
-# 定位相關 API 域名
+CHAIN4="GPSBLOCK"
+CHAIN6="GPSBLOCK"
+
 DOMAINS="
-www.googleapis.com
 geolocation.googleapis.com
 geocode.googleapis.com
 location.services.mozilla.com
+maps-api.apple.com
 "
 
-# 建立 ipset
-ipset create "$IPSET" hash:ip -exist
+TEAM_URL="https://www.nekoqwq.com"
 
-# 解析 API IP
-for domain in $DOMAINS; do
-    getent ahostsv4 "$domain" 2>/dev/null |
-    awk '{print $1}' |
-    sort -u |
-    while read -r ip; do
-        [ -n "$ip" ] && ipset add "$IPSET" "$ip" -exist
+banner() {
+    clear
+    cat <<'EOF'
+ _   _       _    _                    _   _            _       _
+| \ | | ___ | |  / \   _ __  _   _ ___| \ | | ___  ___ | |_ ___| |__   ___
+|  \| |/ _ \| | / _ \ | '_ \| | | / __|  \| |/ _ \/ __|| __/ __| '_ \ / __|
+| |\  | (_) | |/ ___ \| | | | |_| \__ \ |\  |  __/\__ \| || (__| | | | (__
+|_| \_|\___/|_/_/   \_\_| |_|\__,_|___/_| \_|\___||___/ \__\___|_| |_|\___|
+
+                    NoAnyLocationCheck
+
+          一個由 MTF 藥娘發瘋開發的防送中腳本
+          團隊：https://www.nekoqwq.com
+
+EOF
+}
+
+save_rules() {
+    mkdir -p /etc/iptables
+
+    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+    ip6tables-save > /etc/iptables/rules.v6 2>/dev/null || true
+
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1 || true
+    fi
+
+    if command -v ipset >/dev/null 2>&1; then
+        ipset save > /etc/iptables/ipsets.conf 2>/dev/null || true
+    fi
+}
+
+enable_block() {
+
+    # IPv4 ipset
+    ipset create "$IPSET4" hash:ip family inet -exist
+
+    # IPv6 ipset
+    ipset create "$IPSET6" hash:ip family inet6 -exist
+
+    # 清空舊 IP
+    ipset flush "$IPSET4" 2>/dev/null || true
+    ipset flush "$IPSET6" 2>/dev/null || true
+
+    # 解析 IPv4
+    for domain in $DOMAINS; do
+        getent ahostsv4 "$domain" 2>/dev/null |
+        awk '{print $1}' |
+        sort -u |
+        while read -r ip; do
+            [ -n "$ip" ] && ipset add "$IPSET4" "$ip" -exist
+        done
     done
-done
 
-# 建立 chain
-iptables -N "$CHAIN" 2>/dev/null || true
-iptables -F "$CHAIN"
+    # 解析 IPv6
+    for domain in $DOMAINS; do
+        getent ahostsv6 "$domain" 2>/dev/null |
+        awk '{print $1}' |
+        sort -u |
+        while read -r ip; do
+            [ -n "$ip" ] && ipset add "$IPSET6" "$ip" -exist
+        done
+    done
 
-# 只攔指定 API IP
-iptables -A "$CHAIN" \
-    -m set --match-set "$IPSET" dst \
-    -j REJECT
+    # =========================
+    # IPv4
+    # =========================
 
-# INPUT
-iptables -C INPUT -j "$CHAIN" 2>/dev/null ||
-iptables -I INPUT 1 -j "$CHAIN"
+    iptables -N "$CHAIN4" 2>/dev/null || true
+    iptables -F "$CHAIN4"
 
-# OUTPUT
-iptables -C OUTPUT -j "$CHAIN" 2>/dev/null ||
-iptables -I OUTPUT 1 -j "$CHAIN"
+    iptables -A "$CHAIN4" \
+        -m set --match-set "$IPSET4" dst \
+        -j REJECT
 
-# FORWARD
-iptables -C FORWARD -j "$CHAIN" 2>/dev/null ||
-iptables -I FORWARD 1 -j "$CHAIN"
+    iptables -C INPUT -j "$CHAIN4" 2>/dev/null ||
+    iptables -I INPUT 1 -j "$CHAIN4"
 
-# 保存
-mkdir -p /etc/iptables
-iptables-save > /etc/iptables/rules.v4
+    iptables -C OUTPUT -j "$CHAIN4" 2>/dev/null ||
+    iptables -I OUTPUT 1 -j "$CHAIN4"
 
-echo "GPS API 攔截已啟用"
-echo "INPUT / OUTPUT / FORWARD"
+    iptables -C FORWARD -j "$CHAIN4" 2>/dev/null ||
+    iptables -I FORWARD 1 -j "$CHAIN4"
+
+
+    # =========================
+    # IPv6
+    # =========================
+
+    ip6tables -N "$CHAIN6" 2>/dev/null || true
+    ip6tables -F "$CHAIN6"
+
+    ip6tables -A "$CHAIN6" \
+        -m set --match-set "$IPSET6" dst \
+        -j REJECT
+
+    ip6tables -C INPUT -j "$CHAIN6" 2>/dev/null ||
+    ip6tables -I INPUT 1 -j "$CHAIN6"
+
+    ip6tables -C OUTPUT -j "$CHAIN6" 2>/dev/null ||
+    ip6tables -I OUTPUT 1 -j "$CHAIN6"
+
+    ip6tables -C FORWARD -j "$CHAIN6" 2>/dev/null ||
+    ip6tables -I FORWARD 1 -j "$CHAIN6"
+
+
+    # 保存
+    save_rules
+
+    echo "NoAnyLocationCheck 已开启"
+    echo
+    echo "IPv4：已启用"
+    echo "IPv6：已启用"
+    echo "定位 API：已拦截"
+}
+
+disable_block() {
+
+    # IPv4
+    iptables -D INPUT -j "$CHAIN4" 2>/dev/null || true
+    iptables -D OUTPUT -j "$CHAIN4" 2>/dev/null || true
+    iptables -D FORWARD -j "$CHAIN4" 2>/dev/null || true
+
+    iptables -F "$CHAIN4" 2>/dev/null || true
+    iptables -X "$CHAIN4" 2>/dev/null || true
+
+    # IPv6
+    ip6tables -D INPUT -j "$CHAIN6" 2>/dev/null || true
+    ip6tables -D OUTPUT -j "$CHAIN6" 2>/dev/null || true
+    ip6tables -D FORWARD -j "$CHAIN6" 2>/dev/null || true
+
+    ip6tables -F "$CHAIN6" 2>/dev/null || true
+    ip6tables -X "$CHAIN6" 2>/dev/null || true
+
+    # 移除 IP
+    ipset destroy "$IPSET4" 2>/dev/null || true
+    ipset destroy "$IPSET6" 2>/dev/null || true
+
+    # 保存
+    save_rules
+
+    echo "NoAnyLocationCheck 已关闭"
+    echo
+    echo "IPv4：已解除"
+    echo "IPv6：已解除"
+    echo "定位 API：不再拦截"
+}
+
+status_block() {
+
+    echo "NoAnyLocationCheck 状态"
+    echo
+
+    if iptables -C INPUT -j "$CHAIN4" 2>/dev/null; then
+        echo "IPv4：开启"
+    else
+        echo "IPv4：关闭"
+    fi
+
+    if ip6tables -C INPUT -j "$CHAIN6" 2>/dev/null; then
+        echo "IPv6：开启"
+    else
+        echo "IPv6：关闭"
+    fi
+
+    echo
+
+    if ipset list "$IPSET4" >/dev/null 2>&1; then
+        COUNT4=$(ipset list "$IPSET4" 2>/dev/null | awk '/Number of entries:/ {print $4}')
+        echo "IPv4 API IP：${COUNT4:-0}"
+    else
+        echo "IPv4 API IP：0"
+    fi
+
+    if ipset list "$IPSET6" >/dev/null 2>&1; then
+        COUNT6=$(ipset list "$IPSET6" 2>/dev/null | awk '/Number of entries:/ {print $4}')
+        echo "IPv6 API IP：${COUNT6:-0}"
+    else
+        echo "IPv6 API IP：0"
+    fi
+}
+
+menu() {
+
+    banner
+
+    echo "1. 开启"
+    echo "2. 关闭"
+    echo "3. 状态"
+    echo "4. 退出"
+    echo
+
+    read -r -p "请选择： " choice
+
+    case "$choice" in
+        1)
+            enable_block
+            ;;
+        2)
+            disable_block
+            ;;
+        3)
+            status_block
+            ;;
+        4)
+            exit 0
+            ;;
+        *)
+            echo "无效选项"
+            ;;
+    esac
+}
+
+# 必须 root
+if [ "$(id -u)" != "0" ]; then
+    echo "请使用 root 运行"
+    exit 1
+fi
+
+# 命令参数
+case "${1:-}" in
+    on|start|enable)
+        banner
+        enable_block
+        ;;
+    off|stop|disable)
+        banner
+        disable_block
+        ;;
+    status)
+        banner
+        status_block
+        ;;
+    *)
+        menu
+        ;;
+esac
